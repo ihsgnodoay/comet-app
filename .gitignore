@@ -1,0 +1,27 @@
+﻿# Dependencies
+node_modules/
+
+# Generated output
+out/
+release/
+dist/
+coverage/
+*.tsbuildinfo
+
+# Logs
+*.log
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Local editor history and OS files
+.history/
+.DS_Store
+Thumbs.db
+Desktop.ini

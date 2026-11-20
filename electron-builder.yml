@@ -1,0 +1,24 @@
+appId: com.comet.serialstudio
+productName: Comet 串口工作台
+directories:
+  output: release
+  buildResources: build
+files:
+  - out/**/*
+  - package.json
+asar: true
+asarUnpack:
+  - node_modules/serialport/**
+  - node_modules/@serialport/**
+win:
+  icon: build/icon.ico
+  target:
+    - nsis
+    - portable
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  artifactName: Comet-Serial-Studio-Setup-${version}-${arch}.${ext}
+portable:
+  artifactName: Comet-Serial-Studio-Portable-${version}-${arch}.${ext}

@@ -1,0 +1,28 @@
+{
+  "name": "comet-serial-studio",
+  "version": "0.3.0",
+  "description": "Comet 串口工作台 - Electron 桌面端",
+  "author": "Comet",
+  "main": "out/main/index.js",
+  "private": true,
+  "scripts": {
+    "build": "node scripts/build.js",
+    "typecheck": "tsc -p tsconfig.main.json --noEmit",
+    "rebuild": "electron-rebuild -f -w serialport",
+    "dev": "npm run build && node scripts/dev.js",
+    "start": "electron .",
+    "dist": "npm run build && electron-builder --win",
+    "postinstall": "electron-builder install-app-deps"
+  },
+  "dependencies": {
+    "serialport": "^12.0.0"
+  },
+  "devDependencies": {
+    "@electron/rebuild": "^3.7.0",
+    "@types/node": "^18.19.0",
+    "electron": "28.3.3",
+    "electron-builder": "^24.13.3",
+    "typescript": "^5.7.2",
+    "vite": "^5.4.11"
+  }
+}
