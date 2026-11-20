@@ -1,7 +1,7 @@
 /**
  * IPC 中枢：把 renderer 的白名单调用映射到真实串口 / 会话 / 配置。
  * 这里是「UI 每个功能」的后端实现，所有事件都从主进程单向推送给渲染层。
- * 正式构建不含任何虚拟串口通道；MockSerial 仅作为 COMET_SMOKE 测试夹具在主进程内使用。
+ * 正式构建不含任何虚拟串口通道；测试夹具仅存在于源码层。
  */
 import { clipboard, dialog, ipcMain, BrowserWindow } from 'electron';
 import * as fs from 'node:fs';
@@ -9,7 +9,6 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { FrameParser } from './FrameParser';
 import { SerialService } from './SerialService';
-import { MockSerial } from './MockSerial';
 import { SessionStore } from './SessionStore';
 import { SettingsStore } from './SettingsStore';
 import type {
@@ -22,15 +21,11 @@ import type {
 
 export interface Backend {
   serial: SerialService;
-  mock: MockSerial;
   sessions: SessionStore;
   settings: SettingsStore;
   frames: FrameParser;
   win: BrowserWindow | null;
   activeSessionId: string;
-  useMock: boolean;
-  /** 是否允许运行时切换到虚拟串口（正式构建为 false，仅冒烟测试为 true） */
-  allowMock: boolean;
 }
 
 function emit<T>(b: Backend, channel: string, payload: T): void {
@@ -41,13 +36,8 @@ function emitLine(b: Backend, line: LogLine): void {
   emit(b, 'serial:line', line);
 }
 
-function driver(b: Backend): SerialService | MockSerial {
-  return b.useMock ? b.mock : b.serial;
-}
-
 function combinedStatus(b: Backend): ConnectionStatus {
-  const s = driver(b).status();
-  return { ...s, mock: b.useMock };
+  return { ...b.serial.status(), mock: false };
 }
 
 function encodePayload(text: string, hex: boolean, crlf: boolean): Buffer {
@@ -84,17 +74,13 @@ function scheduleHex(b: Backend): void {
 }
 
 async function allPorts(b: Backend): Promise<PortInfo[]> {
-  let real: PortInfo[] = [];
   try {
-    real = await b.serial.listPorts();
+    // 正式应用只列系统真实枚举到的端口
+    return await b.serial.listPorts();
   } catch {
     // 原生模块未就绪时返回空列表，不阻断 UI
+    return [];
   }
-  // 正式应用只列真实端口，绝不混入虚拟 COM 口
-  if (!b.allowMock) return real;
-  const virtual = await b.mock.listPorts();
-  const seen = new Set(real.map(p => p.path));
-  return [...real, ...virtual.filter(p => !seen.has(p.path))];
 }
 
 export function pushPorts(b: Backend): void {
@@ -107,14 +93,13 @@ export function registerIpc(b: Backend): void {
   ipcMain.handle('serial:list', (): Promise<PortInfo[]> => allPorts(b));
 
   ipcMain.handle('serial:connect', async (_e, config: SerialConfig): Promise<ConnectionStatus> => {
-    const d = driver(b);
     try {
-      await d.connect(config);
+      await b.serial.connect(config);
       b.settings.set({ serial: config });
       const line = b.sessions.addLine(
         b.activeSessionId,
         'sys',
-        `已连接 ${config.path} · ${config.baudRate} ${config.dataBits}${config.parity[0].toUpperCase()}${config.stopBits} · DTR=${config.dtr ? 'ON' : 'OFF'} RTS=${config.rts ? 'ON' : 'OFF'}${b.useMock ? ' · 虚拟串口' : ''}`
+        `已连接 ${config.path} · ${config.baudRate} ${config.dataBits}${config.parity[0].toUpperCase()}${config.stopBits} · DTR=${config.dtr ? 'ON' : 'OFF'} RTS=${config.rts ? 'ON' : 'OFF'}`
       );
       emitLine(b, line);
       emit(b, 'serial:ports', await allPorts(b));
@@ -129,7 +114,7 @@ export function registerIpc(b: Backend): void {
   });
 
   ipcMain.handle('serial:disconnect', async (): Promise<ConnectionStatus> => {
-    await driver(b).disconnect();
+    await b.serial.disconnect();
     emitLine(b, b.sessions.addLine(b.activeSessionId, 'sys', '已断开端口'));
     const s = combinedStatus(b);
     emit(b, 'serial:status', s);
@@ -139,11 +124,10 @@ export function registerIpc(b: Backend): void {
   ipcMain.handle('serial:status', (): ConnectionStatus => combinedStatus(b));
 
   ipcMain.handle('serial:send', async (_e, payload: SendPayload) => {
-    const d = driver(b);
-    if (!d.isOpen) return { ok: false, bytes: 0, error: '端口未连接' };
+    if (!b.serial.isOpen) return { ok: false, bytes: 0, error: '端口未连接' };
     try {
       const buf = encodePayload(payload.text, payload.hex, payload.crlf);
-      await d.write(buf);
+      await b.serial.write(buf);
       b.sessions.pushTx(payload.sessionId || b.activeSessionId, buf.length);
       const display = payload.hex
         ? buf.toString('hex').toUpperCase().replace(/(..)(?=.)/g, '$1 ')
@@ -161,7 +145,7 @@ export function registerIpc(b: Backend): void {
   });
 
   ipcMain.handle('serial:signals', async (_e, next: { dtr?: boolean; rts?: boolean }) => {
-    const signals = await driver(b).setSignals(next);
+    const signals = await b.serial.setSignals(next);
     emit(b, 'serial:modem', signals);
     return signals;
   });
@@ -231,16 +215,12 @@ export function registerIpc(b: Backend): void {
 
   const onData = (chunk: Buffer) => handleData(b, chunk);
   b.serial.on('data', onData);
-  b.mock.on('data', onData);
-
-  for (const d of [b.serial, b.mock]) {
-    d.on('status', () => emit(b, 'serial:status', combinedStatus(b)));
-    d.on('modem', signals => emit(b, 'serial:modem', signals));
-    d.on('error', msg => {
-      emit(b, 'serial:error', msg);
-      emitLine(b, b.sessions.addLine(b.activeSessionId, 'err', '串口错误：' + msg));
-    });
-  }
+  b.serial.on('status', () => emit(b, 'serial:status', combinedStatus(b)));
+  b.serial.on('modem', signals => emit(b, 'serial:modem', signals));
+  b.serial.on('error', msg => {
+    emit(b, 'serial:error', msg);
+    emitLine(b, b.sessions.addLine(b.activeSessionId, 'err', '串口错误：' + msg));
+  });
 
   b.frames = new FrameParser(frame => {
     b.sessions.noteFrame(b.activeSessionId, frame.crcOk);

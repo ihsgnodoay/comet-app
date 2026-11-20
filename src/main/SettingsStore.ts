@@ -10,7 +10,7 @@ import { app } from 'electron';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { DEFAULT_SETTINGS, type Settings } from '../shared/types';
-import { ALLOW_MOCK, SETTINGS_VERSION } from '../shared/config';
+import { SETTINGS_VERSION } from '../shared/config';
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -57,9 +57,9 @@ export class SettingsStore {
     return this.file;
   }
 
-  /** 生产环境不允许任何路径把 Mock 打开 */
+  /** mockEnabled 是历史字段，仅用于迁移兼容；任何写入路径都强制归零 */
   private sanitize(): void {
-    if (!ALLOW_MOCK) this.data.mockEnabled = false;
+    this.data.mockEnabled = false;
     this.data.configVersion = SETTINGS_VERSION;
   }
 

@@ -6,6 +6,9 @@ directories:
 files:
   - out/**/*
   - package.json
+  # MockSerial 仅作为源码级测试夹具（smoke-test 直接 require），不进入正式安装包
+  - "!out/main/MockSerial.js"
+  - "!out/main/MockSerial.js.map"
 asar: true
 asarUnpack:
   - node_modules/serialport/**

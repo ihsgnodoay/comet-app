@@ -51,7 +51,7 @@ export class SerialService extends EventEmitter {
     }
   }
 
-  /** 打开端口 */
+  /** 打开端口（带 3s 超时，避免驱动无响应时界面卡死） */
   async connect(cfg: SerialConfig): Promise<ConnectionStatus> {
     await this.disconnect();
     const S = sp();
@@ -80,6 +80,23 @@ export class SerialService extends EventEmitter {
       }
       this.port = port;
 
+      let settled = false;
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        this.lastError = `打开 ${cfg.path} 超时（3s）`;
+        if (this.port === port) this.port = null;
+        try { port.close(() => undefined); } catch { /* ignore */ }
+        reject(new Error(this.lastError));
+      }, 3000);
+
+      const finish = (fn: () => void): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        fn();
+      };
+
       port.on('data', (chunk: Buffer) => this.emit('data', chunk));
       port.on('error', err => {
         this.lastError = err.message;
@@ -95,7 +112,7 @@ export class SerialService extends EventEmitter {
         if (err) {
           this.lastError = err.message;
           if (this.port === port) this.port = null;
-          reject(err);
+          finish(() => reject(err));
           return;
         }
         this.cfg = cfg;
@@ -105,7 +122,7 @@ export class SerialService extends EventEmitter {
           this.emit('modem', this.signals);
         });
         this.emit('status', this.status());
-        resolve(this.status());
+        finish(() => resolve(this.status()));
       });
     });
   }

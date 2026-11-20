@@ -245,7 +245,7 @@
     $('#iPort').textContent = d.port;
     $('#sbPort').textContent = d.port + ' · ' + d.baudRate + ' 8N1';
     updatePortInfo();
-    toast('已选择 ' + d.name);
+    toast('已选中 ' + d.name + ' · 点顶部「连接 / 断开」或打开连接设置');
   }
 
   /* ---------------- 连接 ---------------- */
@@ -264,6 +264,20 @@
     };
   }
 
+  /** 顶部常驻连接按钮：状态、端口名、动作文字随连接状态同步 */
+  function syncQuickConn(s) {
+    const b = $('#quickConn');
+    if (!b) return;
+    const port = (s.config && s.config.path) || $('#fPort').value || '—';
+    b.classList.toggle('on', !!s.connected);
+    b.classList.toggle('off', !s.connected);
+    const p = b.querySelector('.conn-port');
+    const a = b.querySelector('.conn-act');
+    if (p) p.textContent = port;
+    if (a) a.textContent = s.connected ? '断开' : '连接';
+    b.title = (s.connected ? '断开 ' : '连接 ') + port + ' · 也可在左侧「连接设置」里改参数';
+  }
+
   function applyStatus(s) {
     connected = !!s.connected;
     $('#stateBadge').classList.toggle('off', !connected);
@@ -274,11 +288,15 @@
     $$('.sel').forEach(x => x.classList.toggle('disabled', connected));
     $('#sbState').textContent = connected ? '● 已连接' : '○ 未连接';
     $('#sbState').style.color = connected ? 'var(--ok)' : 'var(--t3)';
-    $('#cursorHint').textContent = connected ? '等待数据…' : '端口未打开';
+    $('#sbState').title = '点击连接 / 断开当前端口';
+    $('#cursorHint').textContent = connected ? '等待数据…'
+      : (s.error ? '未连接：' + s.error + ' · 点顶部齿轮换端口或检查占用'
+                 : '端口未打开 · 点顶部「连接」按钮或打开连接设置');
     $$('#tabs .tab .dot').forEach(d => d.classList.toggle('ok', connected));
     const sRight = $$('.s-right span');
-    if (sRight[0]) sRight[0].innerHTML = '<svg class="i" style="width:11px;height:11px"><use href="#i-info"/></svg> ' + (s.mock ? '虚拟串口 · MockSerial' : '真实串口 · serialport');
+    if (sRight[0]) sRight[0].innerHTML = '<svg class="i" style="width:11px;height:11px"><use href="#i-info"/></svg> 真实串口 · serialport';
     if (s.config) $('#sbPort').textContent = s.config.path + ' · ' + s.config.baudRate + ' 8N1';
+    syncQuickConn(s);
   }
 
   async function toggleConnect() {
@@ -521,8 +539,17 @@
       $('#inspector').classList.toggle('themes-mode', b.dataset.view === 'themes');
     }));
 
-    // 连接
+    // 连接：顶部常驻按钮 / 状态栏 / 连接设置面板，三处等价入口
     $('#connectBtn').addEventListener('click', toggleConnect);
+    const qc = $('#quickConn');
+    if (qc) qc.addEventListener('click', toggleConnect);
+    $('#sbState').addEventListener('click', toggleConnect);
+    const os = $('#openSettings');
+    if (os) os.addEventListener('click', () => {
+      document.body.classList.remove('nav-hidden');
+      showView('settings');
+      toast('连接设置：选端口 / 波特率，再点「连接」或「断开」');
+    });
     $$('.tg').forEach(t => t.addEventListener('click', async () => {
       const on = !t.classList.contains('on');
       t.classList.toggle('on', on);
@@ -732,10 +759,10 @@
     if (settings.autoConnect && ports.some(p => p.path === savedPath)) {
       const s = await comet.connect(readConfig());
       applyStatus(s);
-      if (s.error) toast('连接失败：' + s.error + ' · 请在连接设置中选端口');
+      if (s.error) toast('连接失败：' + s.error + ' · 点顶部齿轮检查参数');
     } else if (settings.autoConnect) {
-      toast('未发现端口 ' + savedPath + '，请选择串口后连接');
-      addLine('sys', '等待端口：' + savedPath + ' 未在系统中发现，请在连接设置中选择可用端口');
+      toast('未发现端口 ' + savedPath + ' · 点顶部齿轮打开「连接设置」');
+      addLine('sys', '等待端口：' + savedPath + ' 未在系统中发现，请点顶部齿轮打开「连接设置」选择可用端口');
     }
     window.__cometBootDone = true;
   }
