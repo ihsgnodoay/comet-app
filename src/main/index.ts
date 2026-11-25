@@ -113,15 +113,16 @@ app.whenReady().then(() => {
       let bootDone = false;
       let bootError = '';
       let step = '';
+      let tabsAtBoot = -1;
       try {
         const r = await win?.webContents.executeJavaScript(
-          'JSON.stringify({done: window.__cometBootDone === true, err: String(window.__cometBootError || ""), comet: typeof window.comet, lines: document.querySelectorAll("#log .ln").length, conn: (function(){var b=document.getElementById("quickConn"); return b ? b.className + "|" + b.textContent.trim() : "missing";})(), settingsBtn: !!document.getElementById("openSettings"), hint: String((document.getElementById("cursorHint")||{}).textContent || "")})'
+          'JSON.stringify({done: window.__cometBootDone === true, err: String(window.__cometBootError || ""), comet: typeof window.comet, tabs: document.querySelectorAll("#tabs .tab").length, noSession: document.body.classList.contains("no-session"), emptyShown: getComputedStyle(document.getElementById("emptyState")).display, formInCenter: !!document.querySelector("#emptySlot .settings-body"), consoleHidden: getComputedStyle(document.querySelector(".console")).display, devItems: document.querySelectorAll("#devList .dev").length, devX: document.querySelectorAll("#devList .dev-x").length, portOptions: document.querySelectorAll("#fPort option").length, noPortHint: (function(){var e=document.getElementById("emptyPorts"); return e ? e.classList.contains("on") + "|" + e.textContent.slice(0,12) : "missing";})(), conn: (function(){var b=document.getElementById("quickConn"); return b ? b.className + "|" + b.textContent.trim() : "missing";})(), settingsBtn: !!document.getElementById("openSettings")})'
         );
         diag('[executeJavaScript] ' + r);
-        const parsed = JSON.parse(r as string);
-        bootDone = parsed.done;
+        const parsed = JSON.parse(r as string) as { done: boolean; err: string; tabs: number };
+        bootDone = parsed.done === true;
         bootError = parsed.err;
-        step = parsed.step;
+        tabsAtBoot = parsed.tabs;
       } catch (err) {
         bootError = (err as Error).message;
         diag('[executeJavaScript-error] ' + bootError);
@@ -130,10 +131,15 @@ app.whenReady().then(() => {
         smokeErrors++;
         console.error('[smoke] renderer boot 未完成: ' + bootError + ' step=' + step);
       }
-      diag('[result] bootDone=' + bootDone + ' consoleErrors=' + smokeErrors + ' step=' + step);
+      // 启动已是零会话、不自动连接，boot 不再等串口
+      if (bootDone && tabsAtBoot !== 0) {
+        smokeErrors++;
+        console.error('[smoke] 启动时应为零会话，实际 tabs=' + tabsAtBoot);
+      }
+      diag('[result] bootDone=' + bootDone + ' consoleErrors=' + smokeErrors + ' tabs=' + tabsAtBoot);
       console.log('[smoke] bootDone=' + bootDone + ' consoleErrors=' + smokeErrors);
       app.exit(smokeErrors > 0 || !bootDone ? 1 : 0);
-    }, 12000);
+    }, 6000);
   }
 
   app.on('activate', () => {

@@ -75,7 +75,7 @@ export class SettingsStore {
         if (dirty) {
           loaded.mockEnabled = false;
           loaded.devices = [];
-          console.log('[settings] 迁移配置 → v' + SETTINGS_VERSION + '（已清除虚拟串口与虚构设备）');
+          console.log('[settings] 迁移配置 → v' + SETTINGS_VERSION + '（已清除虚拟串口配置与旧版自动生成的设备列表）');
         }
       }
     } catch (err) {

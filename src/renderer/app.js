@@ -22,8 +22,12 @@
 
   /* ---------------- 状态 ---------------- */
   let settings = null;
-  let sessionId = 's1';
+  // 当前会话 id；null = 没有任何会话（空状态）。启动时恒为 null，会话只能由用户创建。
+  let sessionId = null;
+  let selDeviceId = null;      // 设备栏里被点选的会话（用于高亮）
+  let armRemove = null;        // 已连接会话的「再点一次确认删除」
   let connected = false;
+  let curPort = null;         // 当前连接的串口路径；null = 未连接
   let ports = [];
   let devices = [];
   let quickCmds = [];
@@ -151,14 +155,32 @@
     const sel = $('#fPort');
     const cur = sel.value;
     sel.innerHTML = '';
-    ports.forEach(p => {
+    const addOpt = (value, text) => {
       const o = document.createElement('option');
-      o.value = p.path;
-      o.textContent = p.path + (p.isMock ? ' · 虚拟' : '');
+      o.value = value;
+      o.textContent = text;
       sel.appendChild(o);
-    });
-    if (cur && ports.some(p => p.path === cur)) sel.value = cur;
-    else if (ports.length) sel.value = settings?.serial?.path || ports[0].path;
+    };
+    ports.forEach(p => addOpt(p.path, p.path));
+    // 已保存但此刻没接在电脑上的设备端口也列出来，方便改参数或另存
+    devices.forEach(d => { if (d.port && !ports.some(p => p.path === d.port)) addOpt(d.port, d.port + '（未接入）'); });
+    const all = Array.from(sel.options).map(o => o.value);
+    if (cur && all.includes(cur)) sel.value = cur;
+    else if (all.length) sel.value = all.includes(settings?.serial?.path) ? settings.serial.path : all[0];
+    // 一个端口都没有：下拉框不能只是空白，明确告诉用户发生了什么、该做什么
+    if (!ports.length) {
+      const ph = document.createElement('option');
+      ph.value = '';
+      ph.textContent = '未发现串口设备';
+      ph.disabled = true;
+      sel.appendChild(ph);
+      sel.value = '';
+    }
+    const hint = $('#emptyPorts');
+    if (hint) {
+      hint.textContent = ports.length ? '' : '电脑上现在没有任何串口设备在线。请插上开发板或 USB 转串口（确认是能传数据的线），装好对应驱动，在设备管理器的「端口 (COM 和 LPT)」里看到 COM 口后，点左下角「刷新端口」。';
+      hint.classList.toggle('on', !ports.length);
+    }
     updatePortInfo();
   }
 
@@ -172,32 +194,57 @@
   }
 
   /* ---------------- 设备 / 快捷指令 ---------------- */
+  function tabs() { return $$('#tabs .tab'); }
+
+  /** 设备栏高亮：以点选的会话为准，否则跟随当前活动标签绑定的会话 */
+  function refreshDeviceActive() {
+    const tab = $('#tabs .tab.active');
+    const id = selDeviceId || (tab && tab.dataset.deviceId) || null;
+    const port = !id && tab ? tab.dataset.port : null;
+    $$('#devList .dev').forEach(b => {
+      b.classList.toggle('active', !!id && b.dataset.id === id || !id && !!port && b.dataset.port === port);
+    });
+  }
+
+  /** 设备栏 = 已保存的会话列表：单击选中，双击打开，× 随时删除 */
   function renderDevices() {
     const list = $('#devList');
     list.innerHTML = '';
-    devices.forEach((d, i) => {
+    if (!devices.length) {
+      const empty = document.createElement('div');
+      empty.className = 'dev-empty';
+      empty.textContent = '暂无保存的会话。在主窗口选好串口参数并连接成功后，会话会自动保存到这里。';
+      list.appendChild(empty);
+    }
+    devices.forEach(d => {
       const b = document.createElement('button');
-      b.className = 'dev' + (i === 0 ? ' active' : '');
+      b.className = 'dev';
       b.dataset.id = d.id;
       b.dataset.name = d.name;
       b.dataset.port = d.port;
       b.dataset.baud = String(d.baudRate);
       b.dataset.chip = d.chip;
       b.dataset.tag = d.tag;
-      b.innerHTML = '<span class="dev-dot ' + (d.online ? 'ok' : 'warn') + '"></span>' +
+      b.innerHTML = '<span class="dev-dot ' + (curPort === d.port ? 'ok' : '') + '"></span>' +
         '<span class="dev-main"><span class="dev-name"></span><span class="dev-sub"></span></span>' +
-        '<span class="dev-tag"></span>';
+        '<span class="dev-tag"></span>' +
+        '<span class="dev-x" role="button" title="删除此会话">' + icon('i-x') + '</span>';
       const framing = d.parity === 'Even' ? '8E1' : d.parity === 'Odd' ? '8O1' : '8N1';
       b.querySelector('.dev-name').textContent = d.name;
       b.querySelector('.dev-sub').textContent = d.port + ' · ' + d.baudRate + ' ' + framing;
       b.querySelector('.dev-tag').textContent = d.tag;
-      b.addEventListener('click', () => selectDevice(d, b));
+      b.addEventListener('click', () => selectDevice(d));
+      b.addEventListener('dblclick', () => openDevice(d));
+      const x = b.querySelector('.dev-x');
+      x.addEventListener('click', e => { e.stopPropagation(); removeDevice(d); });
+      x.addEventListener('dblclick', e => e.stopPropagation());
       list.appendChild(b);
     });
     const count = $('.side-head .count');
     if (count) count.textContent = String(devices.length);
     const labels = $$('.sec-label');
-    if (labels[0] && labels[0].lastElementChild) labels[0].lastElementChild.textContent = devices.length + ' 台';
+    if (labels[0] && labels[0].lastElementChild) labels[0].lastElementChild.textContent = devices.length + ' 个会话';
+    refreshDeviceActive();
   }
 
   function renderQuick() {
@@ -229,23 +276,163 @@
     if (focus !== false) $('#sendInput').focus();
   }
 
-  function selectDevice(d, el) {
-    $$('#devList .dev').forEach(x => x.classList.remove('active'));
-    if (el) el.classList.add('active');
-    const activeTab = $('#tabs .tab.active');
-    if (activeTab) {
-      activeTab.querySelector('.tab-name').textContent = d.name;
-      activeTab.dataset.full = d.name;
-      activeTab.dataset.port = d.port;
+  /** <option> 不一定带 value 属性，按 option.value 比对后再选中 */
+  function setSelect(sel, value) {
+    const v = String(value);
+    if (!sel) return false;
+    for (const o of sel.options) {
+      if (o.value === v) { sel.value = v; return true; }
     }
-    $('#fPort').value = d.port;
-    $('#fBaud').value = String(d.baudRate);
+    return false;
+  }
+
+  /** 把一条已保存会话的串口参数填进连接设置表单 */
+  function fillConfig(d) {
+    const sels = $('.settings-body .sel select');
+    if ($('#fName')) $('#fName').value = d.name || '';
+    setSelect($('#fPort'), d.port);
+    setSelect($('#fBaud'), d.baudRate);
+    const p = (d.parity || 'None').toLowerCase();
+    setSelect(sels[4], p === 'even' ? 'Even' : p === 'odd' ? 'Odd' : 'None');
     $('#setPortTag').textContent = d.port;
     $('#iChip').textContent = d.chip;
     $('#iPort').textContent = d.port;
-    $('#sbPort').textContent = d.port + ' · ' + d.baudRate + ' 8N1';
+    const framing = d.parity === 'Even' ? '8E1' : d.parity === 'Odd' ? '8O1' : '8N1';
+    $('#sbPort').textContent = d.port + ' · ' + d.baudRate + ' ' + framing;
     updatePortInfo();
-    toast('已选中 ' + d.name + ' · 点顶部「连接 / 断开」或打开连接设置');
+  }
+
+  /** 表单里填写的设备名；没填就返回空串 */
+  function typedName() {
+    const el = $('#fName');
+    return el ? el.value.trim() : '';
+  }
+
+  /** 按「端口」在设备栏里新建或更新一条会话记录并持久化 */
+  async function upsertDevice(cfg, name, live) {
+    let d = devices.find(x => x.port === cfg.path);
+    if (!d) {
+      d = {
+        id: 'dev-' + Date.now(),
+        name: name || cfg.path,
+        port: cfg.path,
+        baudRate: cfg.baudRate,
+        chip: (ports.find(p => p.path === cfg.path)?.manufacturer) || cfg.path,
+        tag: '串口',
+        parity: 'None',
+        online: !!live
+      };
+      devices.push(d);
+    } else {
+      if (name) d.name = name;
+      d.baudRate = cfg.baudRate;
+      d.online = !!live;
+    }
+    d.parity = cfg.parity.charAt(0).toUpperCase() + cfg.parity.slice(1);
+    devices = await comet.saveDevices(devices);
+    return d;
+  }
+
+  /** 单击：仅选中并填参数，不动任何标签 */
+  function selectDevice(d) {
+    selDeviceId = d.id;
+    refreshDeviceActive();
+    fillConfig(d);
+    toast('已选中 ' + d.name + ' · 双击直接连接');
+  }
+
+  /**
+   * 双击 = Termius 式直连：打开（或切到）该会话的标签，按它保存的参数立即连接。
+   * 串口是全局单连接：另一个端口正连着时不抢线，只打开会话并提示先断开。
+   */
+  async function openDevice(d) {
+    selDeviceId = d.id;
+    let tab = tabs().find(t => t.dataset.deviceId === d.id) || tabs().find(t => t.dataset.port === d.port && !t.dataset.deviceId);
+    if (tab) await activateTab(tab);
+    else tab = await addTab(d.name, d, true);
+    fillConfig(d);
+    document.body.classList.remove('nav-hidden');
+    showView('settings');
+    refreshDeviceActive();
+    if (connected && curPort !== d.port) {
+      toast('已打开「' + d.name + '」· 串口正连着 ' + curPort + '，先断开再双击即可切换');
+      return;
+    }
+    const cfg = readConfig();
+    if (connected) {
+      await bindDeviceToTab(tab, cfg);
+      toast('「' + d.name + '」已在连接中');
+      return;
+    }
+    const s = await comet.connect(cfg);
+    applyStatus(s);
+    if (s.error) {
+      toast('「' + d.name + '」连接失败：' + s.error + ' · 检查参数后点「连接」重试');
+      return;
+    }
+    await bindDeviceToTab(tab, cfg);
+    toast('已连接「' + d.name + '」· ' + cfg.path + ' ' + cfg.baudRate);
+  }
+
+  /** 删除设备栏里的会话：同时关闭它的标签；已连接的要再点一次确认 */
+  async function removeDevice(d) {
+    const tab = tabs().find(t => t.dataset.deviceId === d.id);
+    if (tab && connected && curPort === d.port && armRemove !== d.id) {
+      armRemove = d.id;
+      $$('#devList .dev-x').forEach(x => x.classList.toggle('arm', x.parentElement.dataset.id === d.id));
+      toast('「' + d.name + '」正在连接 · 再点一次 × 确认删除并断开');
+      setTimeout(() => {
+        if (armRemove === d.id) armRemove = null;
+        $$('#devList .dev-x').forEach(x => x.classList.remove('arm'));
+      }, 2500);
+      return;
+    }
+    armRemove = null;
+    if (tab) await closeTab(tab);
+    devices = await comet.saveDevices(devices.filter(x => x.id !== d.id));
+    selDeviceId = null;
+    renderDevices();
+    toast('已删除会话「' + d.name + '」');
+  }
+
+  /** 连接成功后：把当前标签绑定到设备栏里的会话（没有就新建一条），标签名跟随设备名 */
+  async function bindDeviceToTab(tab, cfg) {
+    const typed = typedName();
+    const known = devices.find(x => x.port === cfg.path);
+    const blank = /^新会话 \d+$/.test(tab.dataset.full) || tab.dataset.full === cfg.path;
+    // 新设备：用填写的名称，没填就用标签名（标签仍是「新会话 N」或端口名则退回端口名）
+    // 已有设备：填了名称就改名，否则沿用设备名
+    const name = typed || (known ? known.name : (blank ? cfg.path : tab.dataset.full));
+    const d = await upsertDevice(cfg, name, true);
+    tab.dataset.deviceId = d.id;
+    tab.dataset.port = d.port;
+    if (tab.dataset.full !== d.name) renameTab(tab, d.name);
+    selDeviceId = d.id;
+    renderDevices();
+    fillConfig(d);
+  }
+
+  /** 设备栏的 +：新建设备。只把表单清出来让你填，不建标签、不连接 */
+  function newDevice() {
+    selDeviceId = null;
+    document.body.classList.remove('nav-hidden');
+    if ($('#fName')) $('#fName').value = '';
+    if (tabs().length) showView('settings');
+    refreshDeviceActive();
+    setTimeout(() => ($('#fName') || $('#fPort')).focus(), 30);
+    if (!$('#fPort').value) toast('未发现串口设备 · 接入 USB 转串口后点「刷新端口」');
+    else toast('填好名称和串口参数，点「连接」或「保存到设备栏」');
+  }
+
+  /** 「保存到设备栏」：不连接，只把当前表单参数存成一条会话 */
+  async function saveDeviceOnly() {
+    const cfg = readConfig();
+    if (!cfg.path) { toast('没有可保存的端口 · 请先接入串口设备'); return; }
+    const d = await upsertDevice(cfg, typedName(), false);
+    selDeviceId = d.id;
+    renderDevices();
+    fillConfig(d);
+    toast('已保存「' + d.name + '」到设备栏 · 双击即可连接');
   }
 
   /* ---------------- 连接 ---------------- */
@@ -280,6 +467,13 @@
 
   function applyStatus(s) {
     connected = !!s.connected;
+    const nextPort = connected && s.config ? s.config.path : null;
+    const portChanged = nextPort !== curPort;
+    curPort = nextPort;
+    // 设备栏状态点只认「当前真正连着的端口」，断开 / 换端口时同步亮灭
+    if (portChanged) {
+      $$('#devList .dev').forEach(b => { b.querySelector('.dev-dot').className = 'dev-dot' + (curPort === b.dataset.port ? ' ok' : ''); });
+    }
     $('#stateBadge').classList.toggle('off', !connected);
     $('#stateText').textContent = connected ? 'CONNECTED' : 'DISCONNECTED';
     const btn = $('#connectBtn');
@@ -293,23 +487,44 @@
       : (s.error ? '未连接：' + s.error + ' · 点顶部齿轮换端口或检查占用'
                  : '端口未打开 · 点顶部「连接」按钮或打开连接设置');
     $$('#tabs .tab .dot').forEach(d => d.classList.toggle('ok', connected));
+    // 空状态看不到日志里的 cursorHint，连接失败原因直接显示在居中卡片里
+    const err = $('#emptyErr');
+    if (err) {
+      err.textContent = (!connected && s.error && !tabs().length) ? '连接失败：' + s.error : '';
+      err.classList.toggle('on', !!err.textContent);
+    }
     const sRight = $$('.s-right span');
     if (sRight[0]) sRight[0].innerHTML = '<svg class="i" style="width:11px;height:11px"><use href="#i-info"/></svg> 真实串口 · serialport';
     if (s.config) $('#sbPort').textContent = s.config.path + ' · ' + s.config.baudRate + ' 8N1';
     syncQuickConn(s);
   }
 
+  /** 连接：没有会话时先建一个（并切回日志视图），连上后把它绑定到设备栏 */
   async function toggleConnect() {
     if (connected) {
       applyStatus(await comet.disconnect());
-    } else {
-      if (opts.hex) {
-        const t = $('#sendInput').value.trim();
-        if (t && !/^[0-9a-fA-F\s,]+$/.test(t)) { toast('HEX 发送已开启，输入框内容不是十六进制'); }
-      }
-      const s = await comet.connect(readConfig());
-      applyStatus(s);
-      if (s.error) toast('连接失败：' + s.error);
+      return;
+    }
+    if (opts.hex) {
+      const t = $('#sendInput').value.trim();
+      if (t && !/^[0-9a-fA-F\s,]+$/.test(t)) { toast('HEX 发送已开启，输入框内容不是十六进制'); }
+    }
+    const cfg = readConfig();
+    if (!cfg.path) { toast('未发现串口设备 · 先接入开发板或 USB 转串口，再点「刷新端口」'); return; }
+    let tab = $('#tabs .tab.active');
+    const fresh = !tab;
+    if (!tab) {
+      const known = devices.find(d => d.port === cfg.path);
+      tab = await addTab(known ? known.name : cfg.path, known || null, true);
+    }
+    const s = await comet.connect(cfg);
+    // 空状态下连接失败：把刚建的标签撤掉，用户留在居中的连接设置上直接看到原因
+    if (s.error && fresh) await closeTab(tab, true);
+    applyStatus(s);
+    if (s.error) toast('连接失败：' + s.error);
+    else {
+      await bindDeviceToTab(tab, cfg);
+      toast('已连接 ' + cfg.path + ' ' + cfg.baudRate + ' · 会话已保存到设备栏');
     }
   }
 
@@ -318,6 +533,7 @@
     const input = $('#sendInput');
     const raw = input.value.trim();
     if (!raw) { toast('先写点东西再发送吧'); return; }
+    if (!sessionId) { toast('先打开一个会话'); return; }
     if (!connected) { toast('端口未连接'); return; }
     if (opts.hex) {
       const cleaned = raw.replace(/0x/gi, '').replace(/[^0-9a-f]/gi, '');
@@ -428,12 +644,55 @@
     else { const c = $('.rail-btn[data-panel="' + mode + '"]'); if (c) c.classList.add('active'); }
   }
 
+  /** 串口配置表单全局只有一份节点：无会话时搬到主窗口正中，有会话时回到左侧「连接设置」 */
+  function syncEmpty() {
+    const empty = !tabs().length;
+    document.body.classList.toggle('no-session', empty);
+    const body = $('.settings-body');
+    const host = empty ? $('#emptySlot') : $('.view-settings');
+    if (body && host && body.parentElement !== host) host.appendChild(body);
+  }
+
+  /** 最后一个会话被关闭：回到空状态，主窗口只剩连接设置 */
+  function enterEmpty() {
+    sessionId = null;
+    selDeviceId = null;
+    hideTabTip();
+    $$('#log .ln').forEach(l => l.remove());
+    renderHex([]);
+    $('#mRx').innerHTML = '0<small>B</small>';
+    $('#mTx').innerHTML = '0<small>B</small>';
+    $('#sbRx').textContent = '0';
+    $('#sbTx').textContent = '0';
+    $('#mTime').textContent = '00:00';
+    const metricVals = $$('.metrics .v');
+    if (metricVals[2]) metricVals[2].innerHTML = '0.0<small>KB/s</small>';
+    syncEmpty();
+    refreshDeviceActive();
+    showView('devices');
+    setTimeout(() => $('#fPort').focus(), 30);
+  }
+
+  /** 打开串口配置：空状态下表单就在主窗口中央，此时保持设备栏可见并把焦点送过去 */
+  function openSettings() {
+    document.body.classList.remove('nav-hidden');
+    if (!tabs().length) {
+      showView('devices');
+      $('#emptyState').scrollIntoView({ block: 'center' });
+      $('#fPort').focus();
+      toast('连接设置就在主窗口中央 · 选好参数点「连接」');
+      return;
+    }
+    showView('settings');
+    toast('连接设置：选端口 / 波特率，再点「连接」或「断开」');
+  }
+
   /* ---------------- 会话标签 ---------------- */
   const tabTip = document.createElement('div');
   tabTip.className = 'tab-tip';
   document.body.appendChild(tabTip);
   const HUES = [215, 170, 262, 28, 335, 95];
-  let tabSeq = 2, hueSeq = 2;
+  let tabSeq = 1;
 
   function showTabTip(el) {
     tabTip.textContent = el.dataset.full || el.querySelector('.tab-name')?.textContent || '';
@@ -446,35 +705,72 @@
   function hideTabTip() { tabTip.classList.remove('on'); }
 
   async function activateTab(tab) {
+    if (!tab) return;
     $$('#tabs .tab').forEach(t => t.classList.remove('active'));
     tab.classList.add('active');
     hideTabTip();
-    sessionId = tab.dataset.session || sessionId;
+    sessionId = tab.dataset.session;
+    selDeviceId = tab.dataset.deviceId || null;
     await comet.setActiveSession(sessionId);
+    syncEmpty();
     const lines = await comet.getSessionLog(sessionId);
     renderSessionLog(lines);
+    refreshDeviceActive();
   }
 
-  async function addTab(name) {
-    const hue = HUES[hueSeq % HUES.length]; hueSeq++;
-    const sid = await comet.newSession(name || ('新会话 ' + tabSeq));
+  function renameTab(tab, name) {
+    tab.dataset.full = name;
+    tab.querySelector('.tab-name').textContent = name;
+  }
+
+  /**
+   * 新建会话标签。device 可选：传入已保存的会话时直接绑定它的名字 / 端口。
+   * 返回新建的标签元素。
+   */
+  async function addTab(name, device, silent) {
+    const label = name || ('新会话 ' + tabSeq);
+    const hue = HUES[tabs().length % HUES.length];
+    const sid = await comet.newSession(label);
     const t = document.createElement('button');
     t.className = 'tab';
-    t.dataset.full = name || ('新会话 ' + tabSeq);
+    t.dataset.full = label;
     t.dataset.session = sid;
-    t.dataset.port = $('#fPort').value;
     t.style.setProperty('--h', hue);
     t.innerHTML = '<span class="tab-ico">' + icon('i-terminal') + '<span class="dot"></span></span><span class="tab-name"></span><span class="x">' + icon('i-x') + '</span>';
-    t.querySelector('.tab-name').textContent = t.dataset.full;
+    t.querySelector('.tab-name').textContent = label;
+    if (device) {
+      t.dataset.deviceId = device.id;
+      t.dataset.port = device.port;
+    }
     $('#tabs').insertBefore(t, $('#tabAdd'));
     tabSeq++;
     await activateTab(t);
-    toast('已新建会话');
+    if (!silent) toast('已新建会话「' + label + '」· 在连接设置里选好参数再连接');
+    return t;
+  }
+
+  /**
+   * 关闭会话标签。最后一个也可以关：关掉后回到空状态，主窗口显示串口配置。
+   * 串口连接是全局的：还有别的会话就保持连接并切过去，否则一并断开。
+   */
+  async function closeTab(tab, silent) {
+    const all = tabs();
+    const idx = all.indexOf(tab);
+    await comet.closeSession(tab.dataset.session);
+    tab.remove();
+    const rest = tabs();
+    if (!rest.length) {
+      if (connected) applyStatus(await comet.disconnect());
+      enterEmpty();
+      if (!silent) toast('会话已全部关闭 · 主窗口显示连接设置');
+      return;
+    }
+    await activateTab(rest[Math.min(idx, rest.length - 1)]);
   }
 
   /* ---------------- 命令面板 ---------------- */
   const palItems = () => [
-    ...devices.map(d => ({ group: '设备', icon: 'i-chip', name: d.name, sub: d.port, act: () => selectDevice(d, $$('#devList .dev').find(b => b.dataset.id === d.id)) })),
+    ...devices.map(d => ({ group: '会话', icon: 'i-chip', name: d.name, sub: d.port + ' · 双击设备栏可打开', act: () => selectDevice(d) })),
     ...quickCmds.map(q => ({ group: '指令', icon: 'i-bolt', name: q.cmd, sub: q.label, act: () => fillCmd(q.cmd) })),
     { group: '操作', icon: 'i-link', name: '连接 / 断开端口', sub: 'Ctrl D', act: () => toggleConnect() },
     { group: '操作', icon: 'i-refresh', name: '刷新端口', sub: '', act: () => $('#refreshBtn').click() },
@@ -511,19 +807,18 @@
     // 左侧栏
     $('#navToggle').addEventListener('click', () => setNav(!document.body.classList.contains('nav-hidden')));
     $$('.rail-btn[data-panel]').forEach(b => b.addEventListener('click', () => { showView(b.dataset.panel); toast(b.dataset.panelName + ' 面板'); }));
-    $('#railSettings').addEventListener('click', () => { showView('settings'); document.body.classList.remove('nav-hidden'); toast('连接设置'); });
+    $('#railSettings').addEventListener('click', openSettings);
     $('#devSearch').addEventListener('input', e => {
       const q = e.target.value.trim().toLowerCase();
       $$('#devList .dev').forEach(d => { d.style.display = (d.dataset.name + d.dataset.port + d.dataset.tag).toLowerCase().includes(q) ? '' : 'none'; });
     });
-    $('#addDev').addEventListener('click', async () => {
-      const port = ports.find(p => !devices.some(d => d.port === p.path));
-      const rec = { id: 'dev-' + Date.now(), name: '新设备 ' + (devices.length + 1), port: port ? port.path : 'COM1', baudRate: 115200, chip: 'UNKNOWN', tag: '手动添加', parity: 'None', online: false };
-      devices = await comet.saveDevices([...devices, rec]);
-      renderDevices();
-      toast('已添加设备（可在配置中修改）');
-    });
+    $('#addDev').title = '新建设备';
+    $('#addDev').addEventListener('click', newDevice);
+    const saveDev = $('#saveDevBtn');
+    if (saveDev) saveDev.addEventListener('click', saveDeviceOnly);
     $('#addBtn').addEventListener('click', () => addTab());
+    const secLabel = $$('.sec-label')[0];
+    if (secLabel && secLabel.firstElementChild) secLabel.firstElementChild.textContent = '已保存会话';
     $('#refreshBtn').addEventListener('click', async () => {
       ports = await comet.listPorts();
       renderPorts();
@@ -545,11 +840,7 @@
     if (qc) qc.addEventListener('click', toggleConnect);
     $('#sbState').addEventListener('click', toggleConnect);
     const os = $('#openSettings');
-    if (os) os.addEventListener('click', () => {
-      document.body.classList.remove('nav-hidden');
-      showView('settings');
-      toast('连接设置：选端口 / 波特率，再点「连接」或「断开」');
-    });
+    if (os) os.addEventListener('click', openSettings);
     $$('.tg').forEach(t => t.addEventListener('click', async () => {
       const on = !t.classList.contains('on');
       t.classList.toggle('on', on);
@@ -561,11 +852,7 @@
       const x = e.target.closest('.x');
       if (x) {
         const tab = x.closest('.tab');
-        if ($$('#tabs .tab').length <= 1) { toast('至少保留一个会话'); return; }
-        const wasActive = tab.classList.contains('active');
-        await comet.closeSession(tab.dataset.session);
-        tab.remove();
-        if (wasActive) await activateTab($('#tabs .tab'));
+        await closeTab(tab);
         return;
       }
       const tab = e.target.closest('.tab');
@@ -612,7 +899,7 @@
       const r = await comet.send({ sessionId, text: 'AA 55 03 10 2C 01 7F 3C FA', hex: true, crlf: false, echo: false });
       toast(r.ok ? '已发送 F200 测试帧 · ' + r.bytes + ' B' : '发送失败：' + r.error);
     });
-    $('#clearBtn').addEventListener('click', async () => { await comet.clearSession(sessionId); $$('#log .ln').forEach(l => l.remove()); applyFilters(); toast('日志已清空'); });
+    $('#clearBtn').addEventListener('click', async () => { if (!sessionId) return; await comet.clearSession(sessionId); $$('#log .ln').forEach(l => l.remove()); applyFilters(); toast('日志已清空'); });
     $('#copyBtn').addEventListener('click', async () => {
       const text = $$('#log .ln').map(l => l.innerText.replace(/\s+/g, ' ')).join('\n');
       await comet.copyText(text);
@@ -728,42 +1015,22 @@
     subscribe();
 
     ports = await comet.listPorts();
-    // 首次运行用真实枚举到的端口生成设备列表，不再内置虚构设备
-    if (!devices.length && ports.length) {
-      devices = ports.map((p, i) => ({
-        id: 'dev-' + (i + 1),
-        name: p.friendlyName || p.manufacturer || p.path,
-        port: p.path,
-        baudRate: settings.serial.baudRate,
-        chip: p.manufacturer || 'UNKNOWN',
-        tag: p.vendorId ? 'USB' : '串口',
-        parity: 'None',
-        online: true
-      }));
-      await comet.saveDevices(devices);
-      renderDevices();
-    }
+    // 不再用枚举到的端口自动生成「设备」：设备栏 = 用户真实连过的会话，由 bindDeviceToTab 写入
     renderPorts();
-
-    // 两个初始标签各绑定独立会话
-    sessionId = await comet.getActiveSession();
-    const tabs = $$('#tabs .tab');
-    if (tabs[0]) tabs[0].dataset.session = sessionId;
-    if (tabs[1]) {
-      const sid2 = await comet.newSession('F200 传感器');
-      tabs[1].dataset.session = sid2;
+    if (settings.serial && ports.some(p => p.path === settings.serial.path)) {
+      const sels = $$('.settings-body .sel select');
+      setSelect($('#fBaud'), settings.serial.baudRate);
+      const sp = settings.serial.parity;
+      setSelect(sels[4], sp === 'even' ? 'Even' : sp === 'odd' ? 'Odd' : 'None');
+      const saved = devices.find(d => d.port === settings.serial.path);
+      if (saved) { $('#iChip').textContent = saved.chip; $('#sbPort').textContent = saved.port + ' · ' + saved.baudRate + ' 8N1'; }
     }
+
+    // 启动 = 零会话：不造默认标签、不自动连接。主窗口只显示连接设置，已保存的会话留在左侧设备栏。
+    sessionId = null;
+    enterEmpty();
 
     applyStatus(await comet.getStatus());
-    const savedPath = $('#fPort').value;
-    if (settings.autoConnect && ports.some(p => p.path === savedPath)) {
-      const s = await comet.connect(readConfig());
-      applyStatus(s);
-      if (s.error) toast('连接失败：' + s.error + ' · 点顶部齿轮检查参数');
-    } else if (settings.autoConnect) {
-      toast('未发现端口 ' + savedPath + ' · 点顶部齿轮打开「连接设置」');
-      addLine('sys', '等待端口：' + savedPath + ' 未在系统中发现，请点顶部齿轮打开「连接设置」选择可用端口');
-    }
     window.__cometBootDone = true;
   }
 

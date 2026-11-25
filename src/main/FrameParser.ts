@@ -8,6 +8,7 @@
  * 串口是字节流，可能粘包 / 拆包 / 夹杂 AT 文本，
  * 因此这里做累积缓冲 + 滑动找帧头，而不是按 chunk 边界切帧。
  */
+import { Buffer } from 'buffer';
 import type { FrameResult } from '../shared/types';
 
 const HEAD_A = 0xaa;

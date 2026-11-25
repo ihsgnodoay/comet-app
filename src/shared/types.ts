@@ -214,6 +214,7 @@ export const DEFAULT_SETTINGS: Settings = {
   devices: [],
   quickCommands: DEFAULT_QUICK,
   mockEnabled: false,
-  autoConnect: true,
+  // 历史字段：现在启动恒为零会话、不自动连接，renderer 不再读取
+  autoConnect: false,
   configVersion: 2
 };

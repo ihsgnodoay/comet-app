@@ -3,5 +3,10 @@
  * 正式桌面应用不使用虚拟串口：测试夹具仅保留在源码层，
  * 由 scripts/smoke-test.js 直接 require，不参与主进程运行时、不打入安装包。
  */
-/** settings.json 结构版本，用于清理开发期遗留的虚拟串口配置 */
-export const SETTINGS_VERSION = 2;
+/**
+ * settings.json 结构版本。
+ * v2：清除开发期遗留的虚拟串口配置与虚构设备。
+ * v3：会话模型改为「启动零会话、设备栏 = 用户真正连过的会话」。旧版启动时会自动把
+ *     扫到的端口塞进 devices，且没有任何编辑入口，所以旧列表不是用户配置的数据，迁移时清空。
+ */
+export const SETTINGS_VERSION = 3;

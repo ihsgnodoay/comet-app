@@ -49,8 +49,9 @@ export class SessionStore {
   private nextId = 1;
 
   constructor() {
-    // 默认会话，对应原型里的第一个标签
-    this.create('RT1052 调试板');
+    // 内部兜底会话：UI 启动时是零会话，但串口日志 / 统计始终需要一个写入目标。
+    // 它不对应任何标签，用户可见的会话一律由 renderer 调 create() 创建。
+    this.create('内部');
   }
 
   create(name: string): string {
